@@ -1,241 +1,188 @@
 #include "raylib.h"
+#include "raymath.h"   
 #include <stdlib.h>
-#include <math.h>
+#include <time.h>
 
-#define SCREEN_W 960
-#define SCREEN_H 720
-#define MAX_SEGMENTS 64
-#define MAX_BANANAS 16
-#define MAX_PLATFORMS 16
+
+#define TILE_SIZE 40
+#define GRID_WIDTH 20
+#define GRID_HEIGHT 15
+#define MAX_BODY 50
+#define FRUIT_COUNT 3
 
 typedef struct {
     Vector2 pos;
-    float size;
 } Segment;
 
 typedef struct {
+    Segment body[MAX_BODY];
+    int length;
+} Snakebird;
+
+typedef struct {
     Vector2 pos;
-    float radius;
-    bool alive;
-} Banana;
+    bool active;
+} Fruit;
 
 typedef struct {
     Rectangle rect;
 } Platform;
 
-// Globales
-Segment segments[MAX_SEGMENTS];
-int segCount = 3;
+// ------------------------------------------------------------
+// FUNCIONES AUXILIARES
+// ------------------------------------------------------------
 
-Banana bananas[MAX_BANANAS];
-int bananaCount = 0;
+bool IsOnGround(Snakebird *snake, Platform *platforms, int platformCount) {
+    for (int i = 0; i < snake->length; i++) {
+        Vector2 below = (Vector2){snake->body[i].pos.x, snake->body[i].pos.y + 1};
+        // revisa suelo de plataformas
+        for (int p = 0; p < platformCount; p++) {
+            Rectangle pr = platforms[p].rect;
+            if (below.x * TILE_SIZE >= pr.x &&
+                below.x * TILE_SIZE < pr.x + pr.width &&
+                below.y * TILE_SIZE >= pr.y &&
+                below.y * TILE_SIZE < pr.y + pr.height) {
+                return true;
+            }
+        }
+        // revisa si hay cuerpo debajo
+        for (int j = 0; j < snake->length; j++) {
+            if (i != j && snake->body[j].pos.x == below.x && snake->body[j].pos.y == below.y)
+                return true;
+        }
+    }
+    return false;
+}
 
-Platform platforms[MAX_PLATFORMS];
-int platformCount = 0;
+bool CheckCollisionWithPlatforms(Vector2 next, Platform *platforms, int count) {
+    for (int i = 0; i < count; i++) {
+        Rectangle r = platforms[i].rect;
+        if (next.x * TILE_SIZE >= r.x && next.x * TILE_SIZE < r.x + r.width &&
+            next.y * TILE_SIZE >= r.y && next.y * TILE_SIZE < r.y + r.height) {
+            return true;
+        }
+    }
+    return false;
+}
 
-Vector2 vel = {0, 0};
-float gravity = 900.0f;
-bool onGround = false;
-Color BG_COLOR = {125, 200, 255, 255};
+bool CheckCollisionWithBody(Vector2 next, Snakebird *snake) {
+    for (int i = 0; i < snake->length; i++) {
+        if (snake->body[i].pos.x == next.x && snake->body[i].pos.y == next.y) return true;
+    }
+    return false;
+}
 
-// --- Prototipos
-static float Lerp(float a, float b, float t);
-void ResetGame(void);
-void SpawnBanana(float x, float y);
-void SpawnPlatform(float x, float y, float w, float h);
-bool CheckCollisionSegmentPlatform(const Segment *s, const Platform *p);
-void DrawBanana(const Banana *b);
-void DrawBirdSegment(const Segment *s, int i);
-void SpawnNewBanana(void);
+// ------------------------------------------------------------
+// JUEGO PRINCIPAL
+// ------------------------------------------------------------
+int main() {
+    InitWindow(GRID_WIDTH * TILE_SIZE, GRID_HEIGHT * TILE_SIZE, "Snakebird - Raylib Version");
+    SetTargetFPS(10);
+    srand(time(NULL));
 
-// --- Funciones principales
+    // Snakebird inicial
+    Snakebird snake = {0};
+    snake.length = 3;
+    snake.body[0].pos = (Vector2){5, 5};
+    snake.body[1].pos = (Vector2){5, 6};
+    snake.body[2].pos = (Vector2){5, 7};
 
-int main(void) {
-    InitWindow(SCREEN_W, SCREEN_H, "SnakeBird - Raylib Demo Mejorada");
-    SetTargetFPS(60);
+    // Plataformas (diseño original)
+    Platform platforms[3];
+    platforms[0].rect = (Rectangle){0, GRID_HEIGHT * TILE_SIZE - 40, GRID_WIDTH * TILE_SIZE, 40};
+    platforms[1].rect = (Rectangle){200, GRID_HEIGHT * TILE_SIZE - 160, 200, 40};
+    platforms[2].rect = (Rectangle){480, GRID_HEIGHT * TILE_SIZE - 280, 160, 40};
+    int platformCount = 3;
 
-    ResetGame();
+    // Frutas aleatorias
+    Fruit fruits[FRUIT_COUNT];
+    for (int i = 0; i < FRUIT_COUNT; i++) {
+        fruits[i].pos = (Vector2){rand() % GRID_WIDTH, rand() % (GRID_HEIGHT - 3)};
+        fruits[i].active = true;
+    }
+
+    float gravityTimer = 0.0f;
+    float gravityDelay = 0.3f;
 
     while (!WindowShouldClose()) {
-        float dt = GetFrameTime();
-        float moveX = 0;
+        // ---------------------------
+        // INPUT: Movimiento paso a paso
+        // ---------------------------
+        Vector2 direction = {0, 0};
+        if (IsKeyPressed(KEY_RIGHT)) direction = (Vector2){1, 0};
+        if (IsKeyPressed(KEY_LEFT)) direction = (Vector2){-1, 0};
+        if (IsKeyPressed(KEY_UP)) direction = (Vector2){0, -1};
 
-        // Movimiento lateral
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) moveX += 1;
-        if (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)) moveX -= 1;
-
-        // Salto
-        if ((IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W) || IsKeyPressed(KEY_SPACE)) && onGround) {
-            vel.y = -500.0f;
-            onGround = false;
-        }
-
-        float speed = 250.0f;
-        segments[0].pos.x += moveX * speed * dt;
-
-        // Gravedad
-        vel.y += gravity * dt;
-        segments[0].pos.y += vel.y * dt;
-
-        // Colisiones con plataformas
-        onGround = false;
-        for (int i = 0; i < platformCount; i++) {
-            if (CheckCollisionSegmentPlatform(&segments[0], &platforms[i])) {
-                segments[0].pos.y = platforms[i].rect.y - segments[0].size;
-                vel.y = 0;
-                onGround = true;
-            }
-        }
-
-        // Límites de pantalla
-        if (segments[0].pos.x < 0) segments[0].pos.x = 0;
-        if (segments[0].pos.x > SCREEN_W - segments[0].size) segments[0].pos.x = SCREEN_W - segments[0].size;
-        if (segments[0].pos.y > SCREEN_H) ResetGame();
-
-        // Movimiento de segmentos
-        for (int i = 1; i < segCount; i++) {
-            Vector2 target = segments[i - 1].pos;
-            float followSpeed = 10.0f;
-            segments[i].pos.x = Lerp(segments[i].pos.x, target.x - (segments[i].size * 0.5f), followSpeed * dt);
-            segments[i].pos.y = Lerp(segments[i].pos.y, target.y + (segments[i].size * 0.2f), followSpeed * dt);
-        }
-
-        // Comer bananas
-        for (int b = 0; b < bananaCount; b++) {
-            if (!bananas[b].alive) continue;
-            Rectangle headRect = {segments[0].pos.x, segments[0].pos.y, segments[0].size, segments[0].size};
-            if (CheckCollisionCircleRec(bananas[b].pos, bananas[b].radius, headRect)) {
-                bananas[b].alive = false;
-                if (segCount < MAX_SEGMENTS) {
-                    segments[segCount].pos = segments[segCount - 1].pos;
-                    segments[segCount].size = segments[0].size;
-                    segCount++;
+        if (direction.x != 0 || direction.y != 0) {
+            Vector2 nextHead = Vector2Add(snake.body[0].pos, direction);
+            if (!CheckCollisionWithPlatforms(nextHead, platforms, platformCount) &&
+                !CheckCollisionWithBody(nextHead, &snake)) {
+                // Mueve cuerpo
+                for (int i = snake.length - 1; i > 0; i--) {
+                    snake.body[i].pos = snake.body[i - 1].pos;
                 }
-                SpawnNewBanana();
+                snake.body[0].pos = nextHead;
             }
         }
 
-        if (IsKeyPressed(KEY_R)) ResetGame();
+        // ---------------------------
+        // FÍSICA: Gravedad
+        // ---------------------------
+        gravityTimer += GetFrameTime();
+        if (gravityTimer >= gravityDelay) {
+            gravityTimer = 0;
+            if (!IsOnGround(&snake, platforms, platformCount)) {
+                for (int i = 0; i < snake.length; i++) {
+                    snake.body[i].pos.y += 1;
+                }
+            }
+        }
 
-        // --- DIBUJO ---
+        // ---------------------------
+        // COLISIÓN CON FRUTAS
+        // ---------------------------
+        for (int i = 0; i < FRUIT_COUNT; i++) {
+            if (fruits[i].active &&
+                fruits[i].pos.x == snake.body[0].pos.x &&
+                fruits[i].pos.y == snake.body[0].pos.y) {
+                fruits[i].active = false;
+                if (snake.length < MAX_BODY) {
+                    snake.body[snake.length].pos = snake.body[snake.length - 1].pos;
+                    snake.length++;
+                }
+            }
+        }
+
+        // ---------------------------
+        // DIBUJO
+        // ---------------------------
         BeginDrawing();
-        ClearBackground(BG_COLOR);
+        ClearBackground((Color){120, 170, 255, 255}); // Fondo azul claro
 
-        // Dibujar plataformas como plantas
+        // plataformas
         for (int i = 0; i < platformCount; i++) {
-            Rectangle r = platforms[i].rect;
-            DrawRectangle((int)r.x, (int)r.y, (int)r.width, (int)r.height, (Color){60, 180, 75, 255}); // verde base
-            for (int j = 0; j < (int)(r.width / 20); j++) {
-                float cx = r.x + j * 20 + 10;
-                DrawTriangle(
-                    (Vector2){cx, r.y},
-                    (Vector2){cx - 10, r.y - 20},
-                    (Vector2){cx + 10, r.y - 20},
-                    (Color){50, 200, 50, 255}
-                );
-            }
+            DrawRectangleRec(platforms[i].rect, (Color){60, 180, 75, 255});
         }
 
-        // Dibujar bananas
-        for (int b = 0; b < bananaCount; b++) {
-            if (bananas[b].alive) DrawBanana(&bananas[b]);
+        // frutas
+        for (int i = 0; i < FRUIT_COUNT; i++) {
+            if (fruits[i].active)
+                DrawCircle(fruits[i].pos.x * TILE_SIZE + TILE_SIZE / 2,
+                           fruits[i].pos.y * TILE_SIZE + TILE_SIZE / 2,
+                           TILE_SIZE / 4, YELLOW);
         }
 
-        // Dibujar ave segmentada
-        for (int i = segCount - 1; i >= 0; i--) DrawBirdSegment(&segments[i], i);
-
-        DrawText(TextFormat("Bananas comidas: %d", segCount - 3), 10, 10, 20, BLACK);
-        DrawText("← → para moverte | ↑ / Espacio para saltar | R para reiniciar", 10, SCREEN_H - 30, 18, BLACK);
+        // snakebird
+        for (int i = snake.length - 1; i >= 0; i--) {
+            DrawRectangleV(
+                (Vector2){snake.body[i].pos.x * TILE_SIZE, snake.body[i].pos.y * TILE_SIZE},
+                (Vector2){TILE_SIZE, TILE_SIZE},
+                i == 0 ? (Color){255, 100, 100, 255} : (Color){255, 160, 160, 255});
+        }
 
         EndDrawing();
     }
 
     CloseWindow();
     return 0;
-}
-
-// --- Funciones auxiliares ---
-
-static float Lerp(float a, float b, float t) {
-    return a + (b - a) * t;
-}
-
-void ResetGame(void) {
-    segCount = 3;
-    float startX = 200;
-    float startY = 380;
-    float size = 42;
-    for (int i = 0; i < MAX_SEGMENTS; i++) {
-        segments[i].size = size;
-        segments[i].pos.x = startX - i * (size + 2);
-        segments[i].pos.y = startY;
-    }
-    vel = (Vector2){0, 0};
-    onGround = false;
-
-    // Plataformas tipo plantas (bien distribuidas)
-    platformCount = 0;
-    SpawnPlatform(100, 600, 250, 40);
-    SpawnPlatform(420, 480, 220, 40);
-    SpawnPlatform(700, 360, 200, 40);
-    SpawnPlatform(500, 250, 200, 40);
-    SpawnPlatform(220, 150, 160, 40);
-
-    // Bananas iniciales
-    bananaCount = 0;
-    SpawnBanana(180, 520);
-    SpawnBanana(520, 420);
-    SpawnBanana(720, 300);
-    SpawnBanana(550, 180);
-}
-
-void SpawnPlatform(float x, float y, float w, float h) {
-    if (platformCount >= MAX_PLATFORMS) return;
-    platforms[platformCount++].rect = (Rectangle){x, y, w, h};
-}
-
-void SpawnBanana(float x, float y) {
-    if (bananaCount >= MAX_BANANAS) return;
-    bananas[bananaCount].pos = (Vector2){x, y};
-    bananas[bananaCount].radius = 14.0f;
-    bananas[bananaCount].alive = true;
-    bananaCount++;
-}
-
-void SpawnNewBanana(void) {
-    if (bananaCount >= MAX_BANANAS) return;
-    float x = GetRandomValue(100, SCREEN_W - 100);
-    float y = GetRandomValue(100, SCREEN_H - 300);
-    SpawnBanana(x, y);
-}
-
-bool CheckCollisionSegmentPlatform(const Segment *s, const Platform *p) {
-    Rectangle segRec = {s->pos.x, s->pos.y, s->size, s->size};
-    return CheckCollisionRecs(segRec, p->rect);
-}
-
-void DrawBanana(const Banana *b) {
-    Vector2 p = b->pos;
-    float r = b->radius;
-    DrawCircle((int)p.x, (int)p.y, r, (Color){255, 215, 0, 255});
-    DrawCircleLines((int)p.x, (int)p.y, r, (Color){200, 150, 0, 255});
-    DrawRectangle((int)p.x - 2, (int)p.y - (int)r - 6, 4, 8, (Color){90, 60, 0, 255});
-}
-
-void DrawBirdSegment(const Segment *s, int i) {
-    Color bodyColor = (i == 0) ? (Color){255, 180, 70, 255} : (Color){250 - i * 3, 160 + i, 60 + i * 2, 255};
-    DrawCircle((int)(s->pos.x + s->size / 2), (int)(s->pos.y + s->size / 2), s->size / 2, bodyColor);
-
-    if (i == 0) {
-        // Pico
-        DrawTriangle(
-            (Vector2){s->pos.x + s->size * 0.9f, s->pos.y + s->size * 0.45f},
-            (Vector2){s->pos.x + s->size * 1.1f, s->pos.y + s->size * 0.5f},
-            (Vector2){s->pos.x + s->size * 0.9f, s->pos.y + s->size * 0.55f},
-            ORANGE
-        );
-        // Ojo
-        DrawCircle((int)(s->pos.x + s->size * 0.3f), (int)(s->pos.y + s->size * 0.3f), s->size * 0.1f, WHITE);
-        DrawCircle((int)(s->pos.x + s->size * 0.3f), (int)(s->pos.y + s->size * 0.3f), s->size * 0.05f, BLACK);
-    }
 }
